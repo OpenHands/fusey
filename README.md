@@ -262,6 +262,7 @@ as a Kubernetes container without config files.
 | `FUSEY_COMPACTION_THRESHOLD` | `0.3` | Orphan fraction above which a chunk is targeted by `fusey compact` |
 | `FUSEY_PERSIST_INTERVAL` | `30s` | How often the index is flushed to disk and the object store |
 | `FUSEY_JOURNAL_ENABLED` | `false` | Set to `true` to record every state-mutating operation to the optional edit log. Required for `fusey journal-dump` and `fusey mount <mp> --as-of=<ts>`. |
+| `FUSEY_ALLOW_OTHER` | `true` | When `true`, fusey mounts with the FUSE `allow_other` option so any user on the host can access the mountpoint. When `false`, only the UID that called `mount(2)` (the fusey daemon) can access it (the FUSE default). The default is `true` because fusey's typical deployment runs the daemon as root while the consumer (e.g. an agent-server) runs as a non-root user; without `allow_other` the kernel rejects the consumer's VFS operations before fusey's permission code runs. Set `FUSEY_ALLOW_OTHER=false` to restore the FUSE default if you need to restrict access to the mounter's UID. |
 
 ### Broker store (alternative to direct S3)
 
@@ -325,6 +326,13 @@ export FUSEY_ACCESS_KEY=... FUSEY_SECRET_KEY=... FUSEY_FORCE_PATH_STYLE=true
 
 # Run a compaction cycle (e.g. from a CronJob)
 ./fusey compact
+
+# Print the fusey version and exit. This is the recommended way to
+# identify which fusey release is running in a container
+# (e.g. `kubectl exec $pod -- fusey version`).
+./fusey version
+# fusey v0.0.12          # the v0.0.12 release is installed
+# fusey dev             # built from `go build` / `go run` without release ldflags
 ```
 
 ### Test

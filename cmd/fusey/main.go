@@ -5,6 +5,9 @@
 //	fusey mount <mountpoint>    — start a background daemon; exits when mount is operational
 //	fusey unmount <mountpoint>  — terminate the daemon serving the given mountpoint
 //	fusey compact               — run one compaction cycle and exit
+//	fusey version               — print the fusey version and exit
+//
+// `fusey --version` and `fusey -v` are also accepted as a shorthand for `fusey version`.
 //
 // All configuration is via FUSEY_* environment variables (see README).
 // Each mount gets its own subdirectory under FUSEY_CACHE_DIR named by a random
@@ -46,9 +49,29 @@ type daemonInfo struct {
 	Mountpoint string `json:"mountpoint"`
 }
 
+// Version is the semantic version of fusey. It is overridden at build time
+// by goreleaser via
+//
+//	go build -ldflags "-X main.Version={{ .Version }}"
+//
+// (see .goreleaser.yaml) and remains "dev" when building from source
+// (`go build`, `go run`, `go test`) so the `fusey version` subcommand and
+// `fusey --version` / `fusey -v` flags can be exercised in tests without
+// a release build. ldflags can only override `var` declarations, not `const`.
+var Version = "dev"
+
 func main() {
+	// Top-level version flags — checked before any other argument validation,
+	// so they work regardless of which (if any) subcommand follows. This mirrors
+	// the conventions of `kubectl version`, `docker version`, etc., and means
+	// installed binaries are unambiguously identifiable when called from
+	// outside (e.g. `kubectl exec ... -- fusey --version`).
+	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("fusey %s\n", Version)
+		return
+	}
 	if len(os.Args) < 2 {
-		log.Fatal("usage: fusey <mount|unmount|compact|journal-dump> [args]")
+		log.Fatal("usage: fusey <mount|unmount|compact|journal-dump|version> [args]")
 	}
 	switch os.Args[1] {
 	case "mount":
@@ -94,8 +117,10 @@ func main() {
 			}
 		}
 		runJournalDump(jsonOut)
+	case "version":
+		fmt.Printf("fusey %s\n", Version)
 	default:
-		log.Fatalf("unknown subcommand %q; use 'mount', 'unmount', 'compact', or 'journal-dump'", os.Args[1])
+		log.Fatalf("unknown subcommand %q; use 'mount', 'unmount', 'compact', 'journal-dump', or 'version'", os.Args[1])
 	}
 }
 
@@ -153,6 +178,22 @@ func runMount(mountpoint string, asOf time.Time) {
 		log.Fatalf("create daemon dir: %v", err)
 	}
 
+	// Capture the daemon's stderr (and therefore the stderr of any helper
+	// go-fuse execs during the FUSE mount, such as fusermount3) into a sidecar
+	// file. go-fuse v2.10.x inherits the parent's fd 2 for helper stderr and
+	// only surfaces a cryptic "exit code <raw-wait-status>" message of its own;
+	// the real kernel/syscall error from fusermount3 would otherwise be lost.
+	mountLogPath := filepath.Join(daemonDir, "mount.log")
+	mountLog, err := os.OpenFile(
+		mountLogPath,
+		os.O_CREATE|os.O_WRONLY|os.O_TRUNC,
+		0644,
+	)
+	if err != nil {
+		log.Fatalf("open mount log: %v", err)
+	}
+	defer mountLog.Close()
+
 	r, w, err := os.Pipe()
 	if err != nil {
 		log.Fatalf("pipe: %v", err)
@@ -169,6 +210,7 @@ func runMount(mountpoint string, asOf time.Time) {
 	cmd := exec.Command(exe, daemonArgs...)
 	cmd.Env = os.Environ()
 	cmd.ExtraFiles = []*os.File{w} // becomes fd 3 in the daemon
+	cmd.Stderr = mountLog            // fd 2 in the daemon — inherited by go-fuse helpers
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("start daemon: %v", err)
@@ -178,7 +220,11 @@ func runMount(mountpoint string, asOf time.Time) {
 	buf, err := io.ReadAll(r)
 	r.Close()
 	if err != nil || string(buf) != "ready\n" {
-		log.Fatalf("daemon failed to mount; check %s", filepath.Join(daemonDir, "fusey.log"))
+		log.Fatalf(
+			"daemon failed to mount; check %s and %s",
+			filepath.Join(daemonDir, "fusey.log"),
+			mountLogPath,
+		)
 	}
 
 	if asOf.IsZero() {
@@ -286,7 +332,7 @@ func runDaemon(daemonID, mountpoint string, asOf time.Time) {
 	f := fusefs.New(fsIdx, cs, cfg.MaxFSSize, cfg.CacheDir, readOnly)
 	mountOpts := fuse.MountOptions{
 		FsName:      "fusey",
-		AllowOther:  false,
+		AllowOther:  cfg.AllowOther,
 		DirectMount: true,
 	}
 	if readOnly {

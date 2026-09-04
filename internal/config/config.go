@@ -15,6 +15,17 @@ const (
 	DefaultCompactionThreshold float64       = 0.3
 	DefaultPersistInterval     time.Duration = 30 * time.Second
 	DefaultBrokerAuthHeader                  = "X-SESSION-API-KEY"
+	// DefaultAllowOther matches the FUSE default (`false`) but is
+	// overridden to `true` here for fusey's runtime use: when fusey is
+	// launched inside a sandbox container, the daemon's UID (the user
+	// that called `mount(2)`) is typically root while the consumer
+	// process (e.g. an agent-server) runs as a non-root user; without
+	// `allow_other` the kernel rejects the consumer's VFS operations
+	// on the mount before fusey's permission code runs. Set
+	// FUSEY_ALLOW_OTHER=false to opt back into the FUSE default (the
+	// fusey mount will then only be accessible to the UID that
+	// mounted it).
+	DefaultAllowOther                       = true
 )
 
 // Config holds all runtime configuration resolved from FUSEY_* environment variables.
@@ -84,6 +95,12 @@ type Config struct {
 	// storage and is wiped on every `fusey compact` cycle.
 	// (FUSEY_JOURNAL_ENABLED).
 	JournalEnabled bool
+
+	// AllowOther controls the FUSE `allow_other` mount option
+	// (FUSEY_ALLOW_OTHER, default true). When true, any user on the
+	// host may access the mount; when false, only the UID that called
+	// `mount(2)` may access it (the FUSE default).
+	AllowOther bool
 }
 
 // Load reads FUSEY_* environment variables and returns a populated Config.
@@ -106,6 +123,7 @@ func Load() (*Config, error) {
 		CompactionThreshold: DefaultCompactionThreshold,
 		PersistInterval:     DefaultPersistInterval,
 		JournalEnabled:      false,
+		AllowOther:          DefaultAllowOther,
 	}
 	if v := os.Getenv("FUSEY_BROKER_AUTH_HEADER"); v != "" {
 		cfg.BrokerAuthHeader = v
@@ -139,6 +157,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := parseBoolEnv("FUSEY_JOURNAL_ENABLED", &cfg.JournalEnabled); err != nil {
+		return nil, err
+	}
+	if err := parseBoolEnv("FUSEY_ALLOW_OTHER", &cfg.AllowOther); err != nil {
 		return nil, err
 	}
 	return cfg, nil
