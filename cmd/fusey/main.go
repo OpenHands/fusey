@@ -171,6 +171,7 @@ func parseAsOf(s string) (time.Time, error) {
 // the daemon failed; the parent exits non-zero and refers the user to the log.
 func runMount(mountpoint string, asOf time.Time) {
 	cfg := mustLoadConfig()
+	requireStore(cfg)
 
 	daemonID := newDaemonID()
 	daemonDir := filepath.Join(cfg.CacheDir, daemonID)
@@ -254,6 +255,7 @@ func runMount(mountpoint string, asOf time.Time) {
 // underlying `fusey mount` process instead.
 func runDaemon(daemonID, mountpoint string, asOf time.Time) {
 	cfg := mustLoadConfig()
+	requireStore(cfg)
 
 	daemonDir := filepath.Join(cfg.CacheDir, daemonID)
 	if err := os.MkdirAll(daemonDir, 0755); err != nil {
@@ -471,6 +473,7 @@ func runUnmount(mountpoint string) {
 // subsequent as-of mounts can replay against the post-compact state.
 func runCompact() {
 	cfg := mustLoadConfig()
+	requireStore(cfg)
 	ctx := context.Background()
 
 	objStore, cs := mustBuildStore(ctx, cfg)
@@ -511,10 +514,17 @@ func mustLoadConfig() *config.Config {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	return cfg
+}
+
+// requireStore fatal-exits when neither FUSEY_BROKER_URL nor FUSEY_BUCKET is
+// set. Only the mount, daemon, and compact paths need an object store; unmount
+// operates purely on local PID files under FUSEY_CACHE_DIR and must not require
+// store credentials.
+func requireStore(cfg *config.Config) {
 	if cfg.BrokerURL == "" && cfg.Bucket == "" {
 		log.Fatal("either FUSEY_BROKER_URL or FUSEY_BUCKET is required")
 	}
-	return cfg
 }
 
 // mustBuildStore constructs the appropriate ObjectStore based on config.
