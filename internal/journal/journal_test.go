@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -503,5 +504,56 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The atomic make-node ops must be journaled (a plain pass-through to the
+// embedded index would skip the journal) and must replay to the same state.
+func TestJournaledIndexMakeNodeOpsReplayToLiveState(t *testing.T) {
+	live := index.New(4096)
+	j := New(true)
+	ji := Wrap(live, j)
+	now := time.Now().UnixNano()
+
+	fileIno, err := ji.MakeFile(1, "f.txt", 0o644, 1000, 1000, 0, now)
+	must(t, err)
+	dirIno, err := ji.MakeDir(1, "d", 0o755, 1000, 1000, now+1)
+	must(t, err)
+	linkIno, err := ji.MakeSymlink(dirIno, "l", "../f.txt", 1000, 1000, now+2)
+	must(t, err)
+
+	// File and dir each journal CreateInode+AddDirEntry; the symlink adds SetSymlink.
+	if got := j.BufferLen(); got != 7 {
+		t.Fatalf("buffer len: got %d, want 7", got)
+	}
+
+	if _, err := ji.MakeFile(1, "f.txt", 0o644, 0, 0, 0, now+3); !errors.Is(err, index.ErrExist) {
+		t.Fatalf("duplicate MakeFile: got %v, want ErrExist", err)
+	}
+	if got := j.BufferLen(); got != 7 {
+		t.Errorf("failed create must not be journaled: buffer len %d, want 7", got)
+	}
+
+	replayed, err := ReplayUpTo(index.New(4096), j.buffer, now+10)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+
+	for _, c := range []struct {
+		parent uint64
+		name   string
+		ino    uint64
+	}{{1, "f.txt", fileIno}, {1, "d", dirIno}, {dirIno, "l", linkIno}} {
+		if got, ok := replayed.Lookup(c.parent, c.name); !ok || got != c.ino {
+			t.Errorf("replayed Lookup(%d, %q) = (%d, %v), want (%d, true)", c.parent, c.name, got, ok, c.ino)
+		}
+		want, _ := live.GetInode(c.ino)
+		got, _ := replayed.GetInode(c.ino)
+		if got.FileType != want.FileType || got.Nlink != want.Nlink || got.Mode != want.Mode {
+			t.Errorf("replayed inode %d = %+v, want type/nlink/mode of %+v", c.ino, got, want)
+		}
+	}
+	if target, ok := replayed.GetSymlink(linkIno); !ok || target != "../f.txt" {
+		t.Errorf("replayed symlink target = (%q, %v), want ../f.txt", target, ok)
 	}
 }
