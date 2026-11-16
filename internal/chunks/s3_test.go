@@ -17,9 +17,9 @@ import (
 // s3TestStore returns an S3Store pointed at a real S3-compatible endpoint, or
 // skips the test if FUSEY_TEST_ENDPOINT is not set.
 //
-// To run these tests against a local MinIO instance:
+// To run these tests against a local RustFS instance:
 //
-//	docker run -p 9000:9000 -e MINIO_ROOT_USER=test -e MINIO_ROOT_PASSWORD=testtest minio/minio server /data
+//	docker run -p 9000:9000 -e RUSTFS_ACCESS_KEY=test -e RUSTFS_SECRET_KEY=testtest rustfs/rustfs:1.0.6
 //	FUSEY_TEST_ENDPOINT=http://localhost:9000 \
 //	FUSEY_ACCESS_KEY=test FUSEY_SECRET_KEY=testtest \
 //	FUSEY_TEST_BUCKET=fusey-test \
