@@ -80,6 +80,57 @@ func (ji *JournaledIndex) AddDirEntry(parentIno uint64, name string, childIno ui
 	return nil
 }
 
+// recordMade journals an atomically created node as the CreateInode +
+// AddDirEntry pair that replay expects. The inode is journaled with nlink 0
+// because replay's AddDirEntry is what links it.
+func (ji *JournaledIndex) recordMade(parentIno uint64, name string, ino uint64, now int64) {
+	if inode, ok := ji.Index.GetInode(ino); ok {
+		ji.j.Append(Op{
+			CreateInode: &CreateInode{
+				Ino: ino, FileType: inode.FileType, Mode: inode.Mode,
+				Nlink: 0, UID: inode.UID, GID: inode.GID, Rdev: inode.Rdev,
+				Atime: inode.Atime, Mtime: inode.Mtime, Ctime: inode.Ctime,
+				Blksize: inode.Blksize, Blocks: inode.Blocks,
+			},
+		}, now)
+	}
+	ji.j.Append(Op{
+		AddDirEntry: &AddDirEntry{ParentIno: parentIno, Name: name, ChildIno: ino},
+	}, now)
+}
+
+// MakeFile atomically creates and links a file and records the ops.
+func (ji *JournaledIndex) MakeFile(parentIno uint64, name string, mode, uid, gid, rdev uint32, now int64) (uint64, error) {
+	ino, err := ji.Index.MakeFile(parentIno, name, mode, uid, gid, rdev, now)
+	if err != nil {
+		return ino, err
+	}
+	ji.recordMade(parentIno, name, ino, now)
+	return ino, nil
+}
+
+// MakeDir atomically creates and links a directory and records the ops.
+func (ji *JournaledIndex) MakeDir(parentIno uint64, name string, mode, uid, gid uint32, now int64) (uint64, error) {
+	ino, err := ji.Index.MakeDir(parentIno, name, mode, uid, gid, now)
+	if err != nil {
+		return ino, err
+	}
+	ji.recordMade(parentIno, name, ino, now)
+	return ino, nil
+}
+
+// MakeSymlink atomically creates and links a symlink and records the ops,
+// including the SetSymlink that replay needs for the target.
+func (ji *JournaledIndex) MakeSymlink(parentIno uint64, name, target string, uid, gid uint32, now int64) (uint64, error) {
+	ino, err := ji.Index.MakeSymlink(parentIno, name, target, uid, gid, now)
+	if err != nil {
+		return ino, err
+	}
+	ji.recordMade(parentIno, name, ino, now)
+	ji.j.Append(Op{SetSymlink: &SetSymlink{Ino: ino, Target: target}}, now)
+	return ino, nil
+}
+
 // RemoveDirEntry removes a directory entry and records a RemoveDirEntry op.
 // If the removal drops nlink to 0, also records a DeleteInode op.
 func (ji *JournaledIndex) RemoveDirEntry(parentIno uint64, name string, now int64) error {

@@ -22,16 +22,18 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: Start MinIO
+      # MinIO stopped publishing images (the community repo is archived), so
+      # the S3 integration tests run against RustFS instead.
+      - name: Start RustFS
         run: |
-          docker run -d --name minio \
+          docker run -d --name rustfs \
             -p 9000:9000 \
-            -e MINIO_ROOT_USER=minio \
-            -e MINIO_ROOT_PASSWORD=miniominio \
-            minio/minio server /data
-          # Wait up to 30 s for MinIO to become ready
+            -e RUSTFS_ACCESS_KEY=minio \
+            -e RUSTFS_SECRET_KEY=miniominio \
+            rustfs/rustfs:1.0.6
+          # Wait up to 30 s for RustFS to become ready
           for i in $(seq 1 30); do
-            curl -sf http://localhost:9000/minio/health/live && break
+            curl -sf http://localhost:9000/health && break
             sleep 1
           done
 

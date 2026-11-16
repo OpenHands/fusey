@@ -341,9 +341,9 @@ export FUSEY_ACCESS_KEY=... FUSEY_SECRET_KEY=... FUSEY_FORCE_PATH_STYLE=true
 # Unit tests (no external dependencies)
 go test ./...
 
-# S3 integration tests (requires a running MinIO instance)
-docker run -d -p 9000:9000 -e MINIO_ROOT_USER=test -e MINIO_ROOT_PASSWORD=testtest \
-  minio/minio server /data
+# S3 integration tests (requires a running S3-compatible server, e.g. RustFS)
+docker run -d -p 9000:9000 -e RUSTFS_ACCESS_KEY=test -e RUSTFS_SECRET_KEY=testtest \
+  rustfs/rustfs:1.0.6
 FUSEY_TEST_ENDPOINT=http://localhost:9000 \
 FUSEY_ACCESS_KEY=test FUSEY_SECRET_KEY=testtest \
 go test ./internal/chunks/ -run TestS3

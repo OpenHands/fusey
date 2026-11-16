@@ -40,6 +40,9 @@ type FSIndex interface {
 	SetAttr(ino uint64, mode, uid, gid *uint32, size *int64, atime, mtime *int64, now int64) error
 	CreateInode(fileType index.FileType, mode, uid, gid, rdev uint32, now int64) (uint64, error)
 	AddDirEntry(parentIno uint64, name string, childIno uint64, now int64) error
+	MakeFile(parentIno uint64, name string, mode, uid, gid, rdev uint32, now int64) (uint64, error)
+	MakeDir(parentIno uint64, name string, mode, uid, gid uint32, now int64) (uint64, error)
+	MakeSymlink(parentIno uint64, name, target string, uid, gid uint32, now int64) (uint64, error)
 	RemoveDirEntry(parentIno uint64, name string, now int64) error
 	Rename(srcParent uint64, srcName string, dstParent uint64, dstName string, now int64) error
 	WriteExtent(ino uint64, ext index.Extent, now int64) error
