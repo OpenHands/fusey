@@ -27,11 +27,13 @@ type Index struct {
 	extents   map[uint64][]Extent
 	symlinks  map[uint64]string
 	xattrs    map[uint64]map[string]string
+	parent    map[uint64]uint64 // childIno -> parentIno, derived from dirIndex
 	nextIno   uint64
 	blockSize int32
 
 	dirty       bool
 	remoteDirty bool // true when structural mutations have occurred since the last remote-store write
+	atimeDirty  bool // true when only atime changed since the last snapshot
 }
 
 // New creates an empty Index with a root directory inode.
@@ -53,6 +55,7 @@ func New(blockSize int32) *Index {
 		extents:   map[uint64][]Extent{},
 		symlinks:  map[uint64]string{},
 		xattrs:    map[uint64]map[string]string{},
+		parent:    map[uint64]uint64{},
 		nextIno:   RootIno + 1,
 		blockSize: blockSize,
 	}
@@ -64,6 +67,7 @@ func FromSnapshot(snap *Snapshot, blockSize int32) *Index {
 	idx := &Index{
 		inodes:    snap.Inodes,
 		dirIndex:  make(map[uint64]map[string]uint64),
+		parent:    make(map[uint64]uint64),
 		extents:   snap.ExtentMap,
 		symlinks:  snap.SymlinkTargets,
 		xattrs:    snap.Xattrs,
@@ -88,6 +92,7 @@ func FromSnapshot(snap *Snapshot, blockSize int32) *Index {
 			idx.dirIndex[e.ParentIno] = map[string]uint64{}
 		}
 		idx.dirIndex[e.ParentIno][e.Name] = e.ChildIno
+		idx.parent[e.ChildIno] = e.ParentIno
 	}
 	// Ensure every directory inode has an entry in dirIndex.
 	for ino, inode := range idx.inodes {
@@ -151,11 +156,21 @@ func (idx *Index) IsDirty() bool {
 	return idx.dirty
 }
 
+// IsAtimeDirty reports whether only atime has changed since the last
+// snapshot. Such changes can be deferred across several persist intervals:
+// they cost a full index rewrite but only affect atime precision.
+func (idx *Index) IsAtimeDirty() bool {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.atimeDirty
+}
+
 // MarkClean resets the dirty flag (called after a successful persist).
 func (idx *Index) MarkClean() {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.dirty = false
+	idx.atimeDirty = false
 }
 
 // IsRemoteDirty reports whether structural mutations have occurred since the
@@ -315,6 +330,7 @@ func (idx *Index) AddDirEntry(parentIno uint64, name string, childIno uint64, no
 		return fmt.Errorf("entry %q already exists in directory %d", name, parentIno)
 	}
 	idx.dirIndex[parentIno][name] = childIno
+	idx.parent[childIno] = parentIno
 	child.Nlink++
 	child.Ctime = now
 	parent.Mtime = now
@@ -365,6 +381,7 @@ func (idx *Index) MakeFile(parentIno uint64, name string, mode, uid, gid, rdev u
 	}
 	idx.extents[ino] = []Extent{}
 	idx.dirIndex[parentIno][name] = ino
+	idx.parent[ino] = parentIno
 	parent.Mtime = now
 	parent.Ctime = now
 	idx.dirty = true
@@ -405,6 +422,7 @@ func (idx *Index) MakeDir(parentIno uint64, name string, mode, uid, gid uint32, 
 	}
 	idx.dirIndex[ino] = map[string]uint64{}
 	idx.dirIndex[parentIno][name] = ino
+	idx.parent[ino] = parentIno
 	parent.Mtime = now
 	parent.Ctime = now
 	idx.dirty = true
@@ -446,6 +464,7 @@ func (idx *Index) MakeSymlink(parentIno uint64, name, target string, uid, gid ui
 	}
 	idx.symlinks[ino] = target
 	idx.dirIndex[parentIno][name] = ino
+	idx.parent[ino] = parentIno
 	parent.Mtime = now
 	parent.Ctime = now
 	idx.dirty = true
@@ -476,6 +495,7 @@ func (idx *Index) RemoveDirEntry(parentIno uint64, name string, now int64) error
 	}
 
 	delete(idx.dirIndex[parentIno], name)
+	delete(idx.parent, childIno)
 	child.Nlink--
 	// For directories, the "." self-link accounts for nlink=1 with no
 	// external references. Free the inode when no external links remain:
@@ -529,11 +549,13 @@ func (idx *Index) Rename(srcParent uint64, srcName string, dstParent uint64, dst
 			delete(idx.symlinks, dstChildIno)
 			delete(idx.xattrs, dstChildIno)
 			delete(idx.dirIndex, dstChildIno)
+			delete(idx.parent, dstChildIno)
 		}
 	}
 
 	delete(idx.dirIndex[srcParent], srcName)
 	idx.dirIndex[dstParent][dstName] = srcChildIno
+	idx.parent[srcChildIno] = dstParent
 	srcChild.Ctime = now
 	if parent := idx.inodes[srcParent]; parent != nil {
 		parent.Mtime = now
@@ -739,7 +761,7 @@ func (idx *Index) TouchAtime(ino uint64, now int64) {
 	defer idx.mu.Unlock()
 	if inode, ok := idx.inodes[ino]; ok {
 		inode.Atime = now
-		idx.dirty = true
+		idx.atimeDirty = true
 	}
 }
 
@@ -751,12 +773,8 @@ func (idx *Index) GetParentIno(ino uint64) uint64 {
 	if ino == RootIno {
 		return RootIno
 	}
-	for parentIno, children := range idx.dirIndex {
-		for _, childIno := range children {
-			if childIno == ino {
-				return parentIno
-			}
-		}
+	if p, ok := idx.parent[ino]; ok {
+		return p
 	}
 	return ino
 }

@@ -382,6 +382,9 @@ func runDaemon(daemonID, mountpoint string, asOf time.Time) {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					// IsDirty excludes atime-only changes, so a read-only
+					// workload no longer rewrites the full snapshot every
+					// interval.
 					if idx.IsDirty() || idx.IsRemoteDirty() {
 						if err := persistFn(ctx); err != nil {
 							log.Printf("persist index: %v", err)
